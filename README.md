@@ -1,3 +1,5 @@
+### _This is a **fork** of a project placed [here](https://github.com/nmcveity/z2300)_ 
+
 # Convert images to be compatible with Polaroid Z2300 #
 
 http://www.amazon.com/Polaroid-Z2300-Digital-Instant-Camera/dp/B008GVXL1A
