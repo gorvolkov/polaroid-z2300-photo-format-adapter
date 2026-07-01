@@ -1,0 +1,5 @@
+# process images
+pillow==12.2.0
+
+# process images metadata
+pyexiv2==2.15.5
