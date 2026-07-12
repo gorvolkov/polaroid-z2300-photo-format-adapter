@@ -5,75 +5,90 @@ and fixes EXIF data.
 """
 
 import os
+import sys
+
 from PIL import Image
 import piexif
 
-TARGET_LANDSCAPE = (3648, 2736)
-TARGET_PORTRAIT = (2736, 3648)
+TARGET_LANDSCAPE = 3648, 2736
+TARGET_PORTRAIT = 2736, 3648
+TARGET_RATIO_LANDSCAPE = TARGET_LANDSCAPE[0] / TARGET_LANDSCAPE[1]
+TARGET_RATIO_PORTRAIT = TARGET_PORTRAIT[0] / TARGET_PORTRAIT[1]
 
-
-def fix_image_size(img, target_size, background_color=(255, 255, 255)):
+def calc_new_sizes(image_sizes: tuple, target_sizes: tuple):
     """
-    Resize image maintaining aspect ratio and add padding to reach target size.
+    Расчитывает новое соотношение сторон для того,
+    чтобы вписать изображение в прямоугольник заданных размеров
+    """
+    width, height = image_sizes
+    ratio = width / height
+    target_width, target_height = target_sizes
+    target_ratio = TARGET_RATIO_LANDSCAPE if target_width > target_height else TARGET_RATIO_PORTRAIT
 
-    Args:
-        img: PIL Image object
-        target_size: tuple (width, height)
-        background_color: RGB tuple for padding
+    # картинка более вытянутая, чем целевая => ограничение по длине
+    if ratio > target_ratio:
+        resize_coef = target_width / width
+        new_width = target_width
+        new_height = height * resize_coef
+    # картинка менее вытянутая, чем целевая => ограничичение по высоте
+    else:
+        resize_coef = target_height / height
+        new_width = width * resize_coef
+        new_height = target_height
 
-    Returns:
-        PIL Image object with target size
+    # для расчетов в пикселях округляем и преобразуем в integer
+    return int(round(new_width)), int(round(new_height))
+
+
+def fit_image(img: Image, target_sizes) -> Image:
+    """
+    Вписывает изображение в прямоугольник заданных размеров.
+    Оставшееся пространство заполняется белым цветом
     """
 
-    # Create new image with target size
-    new_img = Image.new('RGB', target_size, background_color)
+    # Вычисляем новые размеры
+    new_width, new_height = calc_new_sizes(img.size, target_sizes)
 
-    # Resize maintaining aspect ratio
-    img_copy = img.copy()
-    img_copy.thumbnail(target_size, Image.Resampling.LANCZOS)
+    # Масштабируем изображение
+    img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-    # Center the image
-    x = (target_size[0] - img_copy.size[0]) // 2
-    y = (target_size[1] - img_copy.size[1]) // 2
-    new_img.paste(img_copy, (x, y))
+    # Создаем белый холст нужного размера
+    new_img = Image.new('RGB', target_sizes, 'white')
+
+    # Вычисляем позицию для центрирования
+    x_offset = (target_sizes[0] - new_width) // 2
+    y_offset = (target_sizes[1] - new_height) // 2
+
+    # Вставляем изображение на холст
+    new_img.paste(img_resized, (x_offset, y_offset))
 
     return new_img
 
 
-
-def update_exif(image_path, width, height):
-    """
-    Update EXIF PixelXDimension and PixelYDimension using piexif.
-
-    Args:
-        image_path: Path to image file
-        width: New width
-        height: New height
-
-    Returns:
-        bytes: Updated EXIF data or None if failed
-    """
+def update_metadata(image_path, target_sizes):
+    """Обновляет метаданные изображения"""
     try:
         # Загружаем существующие EXIF данные
         exif_dict = piexif.load(image_path)
 
+        target_width, target_height = target_sizes[0], target_sizes[1]
+
         # Обновляем теги размера в Exif IFD
-        exif_dict['Exif'][piexif.ExifIFD.PixelXDimension] = width
-        exif_dict['Exif'][piexif.ExifIFD.PixelYDimension] = height
+        exif_dict['Exif'][piexif.ExifIFD.PixelXDimension] = target_width
+        exif_dict['Exif'][piexif.ExifIFD.PixelYDimension] = target_height
 
         # Обновляем основные теги размера в Image IFD (0th)
-        exif_dict['0th'][piexif.ImageIFD.ImageWidth] = width
-        exif_dict['0th'][piexif.ImageIFD.ImageLength] = height
+        exif_dict['0th'][piexif.ImageIFD.ImageWidth] = target_width
+        exif_dict['0th'][piexif.ImageIFD.ImageLength] = target_height
 
         # Конвертируем обратно в байты
-        exif_bytes = piexif.dump(exif_dict)
-
-        print(f"  ✓ EXIF updated: {width}x{height}")
-        return exif_bytes
+        piexif.dump(exif_dict)
+        print(f"  ✓ EXIF updated")
 
     except Exception as e:
         print(f"Warning: Could not update EXIF for {image_path}: {e}")
         return None
+
 
 def process_image(filepath, output_dir=None):
     """
@@ -86,38 +101,34 @@ def process_image(filepath, output_dir=None):
     Returns:
         bool: True if successful, False otherwise
     """
+
+    # путь для обработанного изображения
+    processed_img_path = filepath if output_dir is None else os.path.join(output_dir, os.path.basename(filepath))
+
     try:
         with Image.open(filepath) as img:
             original_size = img.size
             print(f"Processing {filepath} ({original_size[0]}x{original_size[1]})")
 
-            # Determine target size
+            # выбираем, горизонтальное или вертикальное изображение обрабатываем
             if original_size[0] > original_size[1]:
                 target = TARGET_LANDSCAPE
             else:
                 target = TARGET_PORTRAIT
 
-            # Check if resizing is needed
             if original_size == target:
                 print(f"  Size is already correct: {target}")
-                processed_img = None
-                final_size = original_size
+                img.save(processed_img_path)
+
             else:
-                print(f"  Resizing to {target[0]}x{target[1]}")
-                processed_img = fix_image_size(img, target)
-                final_size = target
-
-                # Save the processed image
-                save_path = filepath if output_dir is None else os.path.join(output_dir, os.path.basename(filepath))
-                processed_img.save(save_path, quality=95)
-                print(f"  Image saved: {processed_img.size[0]}x{processed_img.size[1]}")
-
-                # Update filepath to saved path for EXIF update
-                filepath = save_path
+                print(f"  Fit image to a target size")
+                fitted_img = fit_image(img, target)
+                fitted_img.save(processed_img_path)
+                fitted_img.close()
+            print(f"  Image saved: {processed_img_path}")
 
             # Update EXIF
-            update_exif(filepath, final_size[0], final_size[1])
-
+            update_metadata(processed_img_path, target)
             return True
 
     except Exception as e:
@@ -125,7 +136,7 @@ def process_image(filepath, output_dir=None):
         return False
 
 
-def process_directory(directory, output_dir=None):
+def process_folder(directory: str=".", output_dir: str=None):
     """
     Process all JPG/JPEG images in a directory.
 
@@ -136,6 +147,7 @@ def process_directory(directory, output_dir=None):
     Returns:
         tuple: (processed_count, failed_count)
     """
+
     # Get all image files
     extensions = ('.jpg', '.jpeg')
     files = [f for f in os.listdir(directory)
@@ -143,14 +155,13 @@ def process_directory(directory, output_dir=None):
 
     if not files:
         print(f"No JPG files found in {directory}")
-        return (0, 0)
+        sys.exit(0)
 
     # Create output directory if needed
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    processed = 0
-    failed = 0
+    processed,failed = 0, 0
 
     for f in files:
         filepath = os.path.join(directory, f)
@@ -159,14 +170,10 @@ def process_directory(directory, output_dir=None):
         else:
             failed += 1
 
-    return (processed, failed)
-
-
-def main():
-    """Main function when script is run directly."""
-    processed, failed = process_directory('.')
     print(f"\nDone! Processed: {processed}, Failed: {failed}")
+    sys.exit(0)
+
 
 
 if __name__ == "__main__":
-    main()
+    process_folder()
